@@ -1,0 +1,362 @@
+-- LocalBrainrotGiver.lua
+-- Place as a LocalScript (StarterPlayerScripts or PlayerGui).
+-- Safe: client-side visual only. Does NOT modify other players or server-owned items.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
+local player = Players.LocalPlayer
+
+-- Config
+local GUI_NAME = "LocalBrainrotUI"
+local BRAINROTS_FOLDER_NAME = "Brainrots" -- optional folder in ReplicatedStorage containing Models/Accessories
+
+-- State
+local appliedVisual = nil -- the Part/Model welded to the local character for visuals
+local appliedWelds = {}  -- weld instances to clean up
+
+-- Utility: find or create the brainrots source folder
+local function gatherBrainrots()
+    local list = {}
+    local folder = ReplicatedStorage:FindFirstChild(BRAINROTS_FOLDER_NAME)
+    if folder and folder:IsA("Folder") then
+        for _, child in ipairs(folder:GetChildren()) do
+            table.insert(list, {Name = child.Name, Source = child})
+        end
+    end
+
+    -- If none found, create fallback sample brainrots (simple colored spheres)
+    if #list == 0 then
+        for i, color in ipairs({Color3.fromRGB(200,50,50), Color3.fromRGB(50,200,100), Color3.fromRGB(120,40,200)}) do
+            local sample = Instance.new("Model")
+            sample.Name = "SampleBrainrot_" .. i
+            local handle = Instance.new("Part")
+            handle.Name = "Handle"
+            handle.Size = Vector3.new(1,1,1)
+            handle.Shape = Enum.PartType.Ball
+            handle.Color = color
+            handle.CanCollide = false
+            handle.Anchored = false
+            handle.Parent = sample
+            sample.PrimaryPart = handle
+            table.insert(list, {Name = sample.Name, Source = sample})
+        end
+    end
+
+    return list
+end
+
+-- Create simple UI
+local function createUI(brainrotEntries)
+    -- remove existing if present
+    local existing = player:FindFirstChild("PlayerGui") and player.PlayerGui:FindFirstChild(GUI_NAME)
+    if existing then existing:Destroy() end
+
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = GUI_NAME
+    screenGui.ResetOnSpawn = false
+    screenGui.Parent = player:WaitForChild("PlayerGui")
+
+    local main = Instance.new("Frame", screenGui)
+    main.Size = UDim2.new(0, 320, 0, 260)
+    main.Position = UDim2.new(0, 20, 0, 80)
+    main.BackgroundColor3 = Color3.fromRGB(24,24,24)
+    main.BorderSizePixel = 0
+    main.AnchorPoint = Vector2.new(0,0)
+
+    local title = Instance.new("TextLabel", main)
+    title.Size = UDim2.new(1, -10, 0, 30)
+    title.Position = UDim2.new(0, 5, 0, 5)
+    title.BackgroundTransparency = 1
+    title.Text = "Local Brainrot Visualizer"
+    title.TextColor3 = Color3.fromRGB(255,255,255)
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 16
+    title.TextXAlignment = Enum.TextXAlignment.Left
+
+    local closeBtn = Instance.new("TextButton", main)
+    closeBtn.Size = UDim2.new(0, 28, 0, 28)
+    closeBtn.Position = UDim2.new(1, -34, 0, 5)
+    closeBtn.Text = "X"
+    closeBtn.BackgroundTransparency = 0.6
+    closeBtn.TextColor3 = Color3.fromRGB(255,100,100)
+    closeBtn.Font = Enum.Font.GothamBold
+    closeBtn.TextSize = 16
+    closeBtn.MouseButton1Click:Connect(function() screenGui:Destroy() end)
+
+    local listLabel = Instance.new("TextLabel", main)
+    listLabel.Position = UDim2.new(0, 8, 0, 40)
+    listLabel.Size = UDim2.new(0, 150, 0, 20)
+    listLabel.BackgroundTransparency = 1
+    listLabel.Text = "Choose Brainrot:"
+    listLabel.TextColor3 = Color3.fromRGB(200,200,200)
+    listLabel.Font = Enum.Font.Gotham
+    listLabel.TextSize = 14
+    listLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    local scroll = Instance.new("ScrollingFrame", main)
+    scroll.Position = UDim2.new(0,8,0,64)
+    scroll.Size = UDim2.new(0,150,0,180)
+    scroll.CanvasSize = UDim2.new(0,0,0,0)
+    scroll.BackgroundTransparency = 0.85
+    scroll.BorderSizePixel = 0
+    scroll.ScrollBarThickness = 6
+
+    local uiListLayout = Instance.new("UIListLayout", scroll)
+    uiListLayout.Padding = UDim.new(0,6)
+    uiListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+
+    -- Mutation/trait presets (just colors/scale locally)
+    local presetsLabel = Instance.new("TextLabel", main)
+    presetsLabel.Position = UDim2.new(0,170,0,40)
+    presetsLabel.Size = UDim2.new(0,140,0,20)
+    presetsLabel.BackgroundTransparency = 1
+    presetsLabel.Text = "Mutation / Trait:"
+    presetsLabel.TextColor3 = Color3.fromRGB(200,200,200)
+    presetsLabel.Font = Enum.Font.Gotham
+    presetsLabel.TextSize = 14
+    presetsLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    local colorPresets = {
+        {Name="Crimson", Color=Color3.fromRGB(200,20,50)},
+        {Name="Viridian", Color=Color3.fromRGB(30,200,120)},
+        {Name="Amethyst", Color=Color3.fromRGB(120,40,200)},
+        {Name="Pale", Color=Color3.fromRGB(240,220,200)}
+    }
+
+    local selectedPreset = colorPresets[1]
+
+    -- Render color preset buttons
+    for i, preset in ipairs(colorPresets) do
+        local btn = Instance.new("TextButton", main)
+        btn.Size = UDim2.new(0, 64, 0, 28)
+        btn.Position = UDim2.new(0, 170 + ((i-1)%2)*72, 0, 64 + math.floor((i-1)/2) * 34)
+        btn.Text = preset.Name
+        btn.BackgroundColor3 = preset.Color
+        btn.TextColor3 = Color3.fromRGB(0,0,0)
+        btn.Font = Enum.Font.Gotham
+        btn.TextSize = 12
+
+        btn.MouseButton1Click:Connect(function()
+            selectedPreset = preset
+            -- small visual feedback
+            TweenService:Create(btn, TweenInfo.new(0.12), {Size=UDim2.new(0,68,0,30)}):Play()
+            delay(0.12, function() btn.Size = UDim2.new(0,64,0,28) end)
+        end)
+    end
+
+    -- Size control
+    local sizeLabel = Instance.new("TextLabel", main)
+    sizeLabel.Size = UDim2.new(0, 140, 0, 20)
+    sizeLabel.Position = UDim2.new(0,170,0,150)
+    sizeLabel.BackgroundTransparency = 1
+    sizeLabel.Text = "Scale: 1.0"
+    sizeLabel.TextColor3 = Color3.fromRGB(200,200,200)
+    sizeLabel.Font = Enum.Font.Gotham
+    sizeLabel.TextSize = 14
+    sizeLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    local scale = 1.0
+    local minusBtn = Instance.new("TextButton", main)
+    minusBtn.Size = UDim2.new(0, 30, 0, 28)
+    minusBtn.Position = UDim2.new(0, 170, 0, 176)
+    minusBtn.Text = "-"
+    local plusBtn = Instance.new("TextButton", main)
+    plusBtn.Size = UDim2.new(0, 30, 0, 28)
+    plusBtn.Position = UDim2.new(0, 206, 0, 176)
+    plusBtn.Text = "+"
+
+    local function updateScaleLabel()
+        sizeLabel.Text = string.format("Scale: %.2f", scale)
+    end
+
+    minusBtn.MouseButton1Click:Connect(function()
+        scale = math.clamp(scale - 0.1, 0.3, 3)
+        updateScaleLabel()
+    end)
+    plusBtn.MouseButton1Click:Connect(function()
+        scale = math.clamp(scale + 0.1, 0.3, 3)
+        updateScaleLabel()
+    end)
+
+    -- Apply / Remove buttons
+    local applyBtn = Instance.new("TextButton", main)
+    applyBtn.Size = UDim2.new(0, 132, 0, 36)
+    applyBtn.Position = UDim2.new(0, 170, 0, 208)
+    applyBtn.Text = "Apply Visual"
+    applyBtn.BackgroundColor3 = Color3.fromRGB(0,120,255)
+    applyBtn.Font = Enum.Font.GothamBold
+    applyBtn.TextSize = 14
+
+    local removeBtn = Instance.new("TextButton", main)
+    removeBtn.Size = UDim2.new(0, 132, 0, 36)
+    removeBtn.Position = UDim2.new(0, 170+138, 0, 208) -- shifted to the right visually (but fits inside main)
+    removeBtn.Text = "Remove Visual"
+    removeBtn.BackgroundColor3 = Color3.fromRGB(180,60,60)
+    removeBtn.Font = Enum.Font.GothamBold
+    removeBtn.TextSize = 14
+
+    -- Fill scroll with brainrot entries
+    local selectedEntry = nil
+    for i, entry in ipairs(brainrotEntries) do
+        local btn = Instance.new("TextButton", scroll)
+        btn.Size = UDim2.new(1, -12, 0, 28)
+        btn.Text = entry.Name
+        btn.BackgroundColor3 = Color3.fromRGB(40,40,40)
+        btn.TextColor3 = Color3.fromRGB(220,220,220)
+        btn.Font = Enum.Font.Gotham
+        btn.TextSize = 14
+        btn.AutoButtonColor = true
+
+        btn.MouseButton1Click:Connect(function()
+            selectedEntry = entry
+            -- highlight selection
+            for _, c in ipairs(scroll:GetChildren()) do
+                if c:IsA("TextButton") then
+                    c.BackgroundColor3 = Color3.fromRGB(40,40,40)
+                end
+            end
+            btn.BackgroundColor3 = Color3.fromRGB(60,60,100)
+        end)
+    end
+
+    -- Adjust canvas size
+    uiListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        local sizeY = uiListLayout.AbsoluteContentSize.Y + 12
+        scroll.CanvasSize = UDim2.new(0, 0, 0, sizeY)
+    end)
+
+    -- Function to create visual from Source (Model / Accessory / Part)
+    local function createVisualFromSource(source)
+        if not player.Character or not player.Character.Parent then return nil end
+        local char = player.Character
+        local head = char:FindFirstChild("Head")
+        if not head then return nil end
+
+        -- Remove previous
+        if appliedVisual then
+            for _, w in ipairs(appliedWelds) do pcall(function() w:Destroy() end) end
+            pcall(function() appliedVisual:Destroy() end)
+            appliedVisual = nil
+            appliedWelds = {}
+        end
+
+        local clone
+        if source:IsA("Model") then
+            clone = source:Clone()
+            -- if model has PrimaryPart, use it; otherwise try to set PrimaryPart
+            if not clone.PrimaryPart then
+                local p = clone:FindFirstChildWhichIsA("BasePart", true)
+                if p then clone.PrimaryPart = p end
+            end
+            clone.Parent = workspace
+            -- ensure parts non-anchored
+            for _, part in ipairs(clone:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.Anchored = false
+                    part.CanCollide = false
+                end
+            end
+        elseif source:IsA("Accessory") then
+            -- Accessory -> clone Handle
+            local ac = source:Clone()
+            clone = Instance.new("Model")
+            clone.Name = ac.Name .. "_visual"
+            local handle = ac:FindFirstChild("Handle")
+            if handle then
+                local h = handle:Clone()
+                h.Parent = clone
+                clone.PrimaryPart = h
+            end
+            clone.Parent = workspace
+        elseif source:IsA("BasePart") then
+            clone = source:Clone()
+            local model = Instance.new("Model")
+            model.Name = source.Name .. "_visual"
+            clone.Parent = model
+            model.PrimaryPart = clone
+            clone = model
+            clone.Parent = workspace
+        else
+            -- fallback: create a simple sphere
+            local model = Instance.new("Model")
+            model.Name = "Brainrot_Fallback"
+            local part = Instance.new("Part")
+            part.Name = "Handle"
+            part.Size = Vector3.new(1,1,1)
+            part.Shape = Enum.PartType.Ball
+            part.Anchored = false
+            part.CanCollide = false
+            part.Parent = model
+            model.PrimaryPart = part
+            model.Parent = workspace
+            clone = model
+        end
+
+        -- Apply mutation color and scale to all BaseParts
+        for _, p in ipairs(clone:GetDescendants()) do
+            if p:IsA("BasePart") then
+                p.Color = selectedPreset.Color
+                p.Size = p.Size * scale
+            end
+        end
+
+        -- Position and weld to head
+        if clone.PrimaryPart then
+            local targetCFrame = head.CFrame * CFrame.new(0, 0.6 + (clone.PrimaryPart.Size.Y/2)*scale, 0)
+            clone:SetPrimaryPartCFrame(targetCFrame)
+
+            -- Weld each BasePart to the head with WeldConstraint
+            for _, part in ipairs(clone:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    local weld = Instance.new("WeldConstraint")
+                    weld.Part0 = part
+                    weld.Part1 = head
+                    weld.Parent = part
+                    table.insert(appliedWelds, weld)
+                end
+            end
+        end
+
+        appliedVisual = clone
+        return clone
+    end
+
+    -- Button callbacks
+    applyBtn.MouseButton1Click:Connect(function()
+        if not selectedEntry then
+            warn("No brainrot selected")
+            return
+        end
+        -- If the source came from ReplicatedStorage, we may need to clone differently:
+        local source = selectedEntry.Source
+        -- If source parent is ReplicatedStorage, clone it before using; createVisualFromSource handles clones.
+        local cloneSource = source
+        -- If the source is an instance that lives in ReplicatedStorage and not a Model (we cloned earlier), pass it directly.
+        createVisualFromSource(cloneSource)
+    end)
+
+    removeBtn.MouseButton1Click:Connect(function()
+        if appliedVisual then
+            for _, w in ipairs(appliedWelds) do pcall(function() w:Destroy() end) end
+            pcall(function() appliedVisual:Destroy() end)
+            appliedVisual = nil
+            appliedWelds = {}
+        end
+    end)
+
+end
+
+-- Main
+local brainrots = gatherBrainrots()
+createUI(brainrots)
+
+-- Auto reapply on character respawn if desired: (keeps visuals only while alive)
+player.CharacterAdded:Connect(function(char)
+    -- remove any applied visuals from previous character (they were parented to workspace)
+    -- keep them removed; user can reapply manually. If you want auto reapply, store last selection and reapply here.
+end)
+
+-- Instructions for the user (printed)
+print("Local Brainrot UI loaded. Use the UI to pick a brainrot, a mutation color, and scale. This is visual-only and affects only your client.")
